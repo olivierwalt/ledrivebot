@@ -16,8 +16,8 @@ def format_emplacement(texte: str) -> str:
     if len(texte) == 7:
         zone = texte[0]           # 1
         rayon = texte[1]          # A
-        bloc = texte[2:5]         # 041
-        niveau = texte[5:]        # 23
+        bloc = texte[2:4]         # 041
+        niveau = texte[4:]        # 23
         return f"{zone} {rayon}{bloc}.{niveau}"
     return texte
 
