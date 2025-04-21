@@ -1,142 +1,112 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
-from io import BytesIO
+import os
 import requests
-from notion_client import Client
-from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 
-# 🧠 Notion setup
-notion_token = "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"
-notion_database_id = "0d858cdd58724beeb5467a9be512bb22"
-notion = Client(auth=notion_token)
+TOKEN = os.environ["TOKEN_TELEGRAM"]
+NOTION_TOKEN = os.environ["NOTION_TOKEN"]
+NOTION_DATABASE = os.environ["NOTION_DATABASE"]
 
-# Stockage des derniers emplacements formatés à envoyer
-last_generated_codes = {}
+# Générer une URL de code Aztec
+def get_aztec_url(data: str) -> str:
+    return f"https://barcode.orcascan.com/?type=azteccode&format=png&data={data}"
 
-# 📦 API Aztec
-def get_aztec_image(code_data: str) -> BytesIO:
-    url = f"https://barcode.orcascan.com/?type=azteccode&format=png&data={code_data}"
-    response = requests.get(url)
-    buffer = BytesIO(response.content)
-    buffer.seek(0)
-    return buffer
+# Formater un emplacement type 1A03203 -> 1 A03.203
+def format_emplacement(texte: str) -> str:
+    if len(texte) >= 7:
+        zone = texte[0]
+        rayon = texte[1]
+        bloc = texte[2:5]
+        niveau = texte[5:]
+        return f"{zone} {rayon}{bloc}.{niveau}"
+    return texte
 
-# 🔤 Formater un emplacement comme demandé
-def format_emplacement(raw: str) -> str:
-    # Exemple : 1A03203 → 1 A03.203
-    return f"{raw[0]} {raw[1]}{raw[2:4]}.{raw[4:]}"
-
-# 🖨️ Envoi dans Notion avec format adapté
-def send_to_notion(formatted_code: str):
-    try:
-        now = datetime.now().isoformat()
-        notion.pages.create(
-            parent={"database_id": notion_database_id},
-            properties={
-                "Emplacement": {
-                    "title": [
-                        {"text": {"content": formatted_code}}
-                    ]
-                },
-                "Demandé par": {
-                    "rich_text": [
-                        {"text": {"content": "Bot Telegram"}}
-                    ]
-                },
-                "Date": {
-                    "date": {
-                        "start": now
-                    }
-                }
-            }
-        )
-    except Exception as e:
-        print(f"[ERREUR Notion] {e}")
-
-# 🔘 Boutons Imprimer / Pas besoin
-def get_action_buttons() -> InlineKeyboardMarkup:
-    keyboard = [
-        [
-            InlineKeyboardButton("🖨️ Imprimer", callback_data='print'),
-            InlineKeyboardButton("❌ Pas besoin", callback_data='skip')
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# ✅ Commandes
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bienvenue ! Utilise /gencode, /emplacement ou /conteneur. Tape /menu pour les options.")
-
-async def gencode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = ''.join(context.args).upper()
-    if not text:
-        await update.message.reply_text("Utilise la commande ainsi (exemple) : /gencode 329182763512938")
-        return
-
-    buffer = get_aztec_image(text)
-    await update.message.reply_photo(photo=buffer, caption=f"Code Aztec : {text}")
-
-async def emplacement(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = ''.join(context.args).upper()
-    if not text or len(text) < 7:
-        await update.message.reply_text("Utilise la commande ainsi : /emplacement 1A03203 (zone allée échelle emplacement)")
-        return
-
-    full_code = f"902{text}"
-    formatted = format_emplacement(text)
-    buffer = get_aztec_image(full_code)
-    last_generated_codes[update.effective_user.id] = formatted
-    await update.message.reply_photo(photo=buffer, caption=f"Code Aztec pour emplacement : {formatted}", reply_markup=get_action_buttons())
-
-async def conteneur(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = ''.join(context.args).upper()
-    if not text:
-        await update.message.reply_text("Utilise la commande ainsi : /conteneur 12345 (renseigne le numéro complet dans l'infobulle du journal)")
-        return
-
-    full_code = f"900{text}"
-    buffer = get_aztec_image(full_code)
-    await update.message.reply_photo(photo=buffer, caption=f"Code Aztec pour conteneur : {full_code}")
-
-# 🎛️ Menu
+# Commande /menu
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("📦 Générer un code", callback_data='menu_code')],
-        [InlineKeyboardButton("🧱 Code Emplacement", callback_data='menu_emplacement')],
-        [InlineKeyboardButton("🛢️ Code Conteneur", callback_data='menu_conteneur')]
+    buttons = [
+        [InlineKeyboardButton("📦 /conteneur", callback_data="conteneur")],
+        [InlineKeyboardButton("🏷️ /emplacement", callback_data="emplacement")],
+        [InlineKeyboardButton("🔁 /gencode", callback_data="gencode")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Choisis une action :", reply_markup=reply_markup)
+    await update.message.reply_text("Choisis une commande :", reply_markup=InlineKeyboardMarkup(buttons))
 
-# 🔘 Gestion des boutons
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Boutons de raccourci
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
-    action = query.data
+    await query.message.reply_text(f"{query.data} ")
 
-    if action == 'menu_code':
-        await query.message.reply_text("Envoie /gencode suivi du texte (ex : /gencode 3827192039281)")
-    elif action == 'menu_emplacement':
-        await query.message.reply_text("Envoie /emplacement suivi du code (ex : /emplacement 1A03203)")
-    elif action == 'menu_conteneur':
-        await query.message.reply_text("Envoie /conteneur suivi du code (ex : /conteneur 2871662738271)")
-    elif action == 'print':
-        formatted_code = last_generated_codes.get(user_id)
-        if formatted_code:
-            send_to_notion(formatted_code)
-            await query.message.reply_text(f"🖨️ Demande d'impression pour le code {formatted_code} bien envoyée.")
-        else:
-            await query.message.reply_text("Aucun code emplacement à imprimer trouvé.")
-    elif action == 'skip':
-        await query.message.reply_text("👍 Pas d'impression, action annulée.")
+# Envoi à Notion
+def send_to_notion(emplacement: str):
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+    }
+    payload = {
+        "parent": { "database_id": NOTION_DATABASE },
+        "properties": {
+            "Emplacement": { "title": [{ "text": { "content": emplacement } }] },
+            "Demandé par": { "rich_text": [{ "text": { "content": "Bot Telegram" } }] }
+        }
+    }
+    requests.post("https://api.notion.com/v1/pages", headers=headers, json=payload)
 
-# 🚀 Lancement du bot
-app = ApplicationBuilder().token("7900663906:AAHvwP4jdX_ySu2hiHvPYMV7-0dSyiGkiCQ").build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("gencode", gencode))
-app.add_handler(CommandHandler("emplacement", emplacement))
-app.add_handler(CommandHandler("conteneur", conteneur))
+# Commande générique
+async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE, prefix: str, is_emplacement=False):
+    if not context.args:
+        await update.message.reply_text("Envoie un code après la commande.")
+        return
+
+    user_input = context.args[0].upper()
+    code = prefix + user_input
+    url = get_aztec_url(code)
+
+    # Format spécial pour Notion
+    if is_emplacement:
+        notion_format = format_emplacement(user_input)
+        keyboard = [
+            [
+                InlineKeyboardButton("🖨️ Imprimer", callback_data=f"print::{notion_format}"),
+                InlineKeyboardButton("❌ Pas besoin", callback_data="skip")
+            ]
+        ]
+        await update.message.reply_photo(photo=url, reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text(f"Code pour emplacement : {code}")
+    else:
+        await update.message.reply_photo(photo=url)
+        await update.message.reply_text(f"Code : {code}")
+
+# Gestion des impressions
+async def print_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data.startswith("print::"):
+        emplacement = data.split("::")[1]
+        send_to_notion(emplacement)
+        await query.edit_message_caption(caption=f"🖨️ Impression demandée pour : {emplacement}")
+    elif data == "skip":
+        await query.edit_message_caption(caption="❌ Impression annulée.")
+
+# Lancement
+app = ApplicationBuilder().token(TOKEN).build()
+
 app.add_handler(CommandHandler("menu", menu))
-app.add_handler(CallbackQueryHandler(handle_button))
-app.run_polling()
+app.add_handler(CommandHandler("gencode", lambda u, c: generate(u, c, "")))
+app.add_handler(CommandHandler("conteneur", lambda u, c: generate(u, c, "900")))
+app.add_handler(CommandHandler("emplacement", lambda u, c: generate(u, c, "902", is_emplacement=True)))
+app.add_handler(CallbackQueryHandler(button_handler, pattern="^(conteneur|emplacement|gencode)$"))
+app.add_handler(CallbackQueryHandler(print_button, pattern="^(print::|skip)"))
+
+# Démarrage via webhook
+WEBHOOK_URL = "https://ledrivebot.onrender.com"
+
+if __name__ == "__main__":
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000)),
+        url_path=TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
+    )
